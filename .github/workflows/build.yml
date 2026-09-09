@@ -1,0 +1,110 @@
+name: Genetik Base APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: "URL download ZIP project Flutter"
+        required: true
+      tag:
+        description: "Tag build"
+        required: true
+      build_type:
+        description: "debug / release"
+        required: true
+        default: "release"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Download ZIP project
+        run: |
+          set -e
+          echo "=== Downloading ZIP ==="
+          curl -fL \
+            -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
+            -H "Accept: application/octet-stream" \
+            "${{ github.event.inputs.zip_url }}" \
+            -o project.zip
+          test -s project.zip
+          unzip -t project.zip >/dev/null
+          echo "✅ ZIP valid"
+
+      - name: Extract ZIP project
+        run: |
+          set -e
+          rm -rf project_raw
+          unzip -q project.zip -d project_raw
+          SUB_DIR_COUNT=$(find project_raw -maxdepth 1 -mindepth 1 -type d | wc -l)
+          FILE_COUNT=$(find project_raw -maxdepth 1 -mindepth 1 -type f | wc -l)
+          if [ "$SUB_DIR_COUNT" -eq 1 ] && [ "$FILE_COUNT" -eq 0 ]; then
+            PROJECT_DIR=$(find project_raw -maxdepth 1 -mindepth 1 -type d | head -n 1)
+          else
+            PROJECT_DIR="project_raw"
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Using: $PROJECT_DIR"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@main
+        with:
+          flutter-version: "3.41.9"
+          channel: "stable"
+          cache: true
+
+      - name: Get dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -e
+          if [ -f pubspec.yaml ]; then
+            flutter pub get
+          else
+            echo "❌ pubspec.yaml tidak ditemukan."
+            exit 1
+          fi
+
+      - name: Analyze
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: flutter analyze || true
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -e
+          if [ "${{ github.event.inputs.build_type }}" = "debug" ]; then
+            flutter build apk --debug
+          else
+            flutter build apk --release
+          fi
+
+      - name: Find APK
+        run: |
+          set -e
+          APK=$(find "${{ env.PROJECT_DIR }}" -type f -name "*.apk" | head -n 1)
+          test -n "$APK"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          echo "APK found: $APK"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: genetic-base-${{ github.event.inputs.build_type }}-${{ github.event.inputs.tag }}
+          path: ${{ env.APK_PATH }}
+          retention-days: 1
+          if-no-files-found: error
