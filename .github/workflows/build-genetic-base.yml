@@ -1,4 +1,3 @@
-const GENETIK_BUILD_YML = `
 name: Build APK Genetik
 
 on:
@@ -47,13 +46,13 @@ jobs:
 
       - name: Create Cordova project
         env:
-          APP_NAME: \${{ inputs.app_name }}
+          APP_NAME: ${{ inputs.app_name }}
         run: |
-          cordova create app com.genetik.app "\$APP_NAME"
+          cordova create app com.genetik.app "$APP_NAME"
 
       - name: Configure website URL
         env:
-          WEBSITE_URL: \${{ inputs.url }}
+          WEBSITE_URL: ${{ inputs.url }}
         working-directory: app
         run: |
           python3 - <<'PY'
@@ -69,12 +68,10 @@ jobs:
               raise SystemExit("Website URL harus diawali http:// atau https://")
 
           config_file = "config.xml"
-
           tree = ET.parse(config_file)
           root = tree.getroot()
 
           content = root.find("content")
-
           if content is None:
               content = ET.SubElement(root, "content")
 
@@ -90,15 +87,13 @@ jobs:
           PY
 
       - name: Configure icon
-        if: \${{ inputs.icon_url != '' }}
+        if: ${{ inputs.icon_url != '' }}
         env:
-          ICON_URL: \${{ inputs.icon_url }}
+          ICON_URL: ${{ inputs.icon_url }}
         working-directory: app
         run: |
           mkdir -p resources/icon
-
-          curl -fL "\$ICON_URL" -o resources/icon/icon.png
-
+          curl -fL "$ICON_URL" -o resources/icon/icon.png
           file resources/icon/icon.png
 
           if ! file resources/icon/icon.png | grep -qiE 'PNG|JPEG'; then
@@ -128,4 +123,3 @@ jobs:
           name: app-release
           path: app/platforms/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-`;
