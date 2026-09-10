@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'URL website'
+        description: 'URL website (http:// atau https://)'
         required: true
         type: string
       app_name:
@@ -12,8 +12,9 @@ on:
         required: true
         type: string
       icon_url:
-        description: 'URL icon'
+        description: 'URL icon PNG/JPG (opsional)'
         required: false
+        default: ''
         type: string
 
 permissions:
@@ -22,6 +23,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -41,13 +43,46 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Cordova
-        run: npm install -g cordova
+      - name: Install Cordova tools
+        run: |
+          set -e
+          npm install --global cordova cordova-res
+          cordova --version
+          cordova-res --version
+
+      - name: Validate build inputs
+        env:
+          WEBSITE_URL: ${{ inputs.url }}
+          APP_NAME: ${{ inputs.app_name }}
+        run: |
+          set -e
+          python3 - <<'PY'
+          import os
+          from urllib.parse import urlparse
+
+          url = os.environ.get('WEBSITE_URL', '').strip()
+          name = os.environ.get('APP_NAME', '').strip()
+
+          if not name:
+              raise SystemExit('Nama aplikasi kosong.')
+
+          if len(name) > 50:
+              raise SystemExit('Nama aplikasi terlalu panjang (maksimal 50 karakter).')
+
+          parsed = urlparse(url)
+          if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+              raise SystemExit('Website URL harus berupa URL lengkap dengan http:// atau https://')
+
+          print('Input build valid.')
+          print('Nama:', name)
+          print('URL :', url)
+          PY
 
       - name: Create Cordova project
         env:
           APP_NAME: ${{ inputs.app_name }}
         run: |
+          set -e
           cordova create app com.genetik.app "$APP_NAME"
 
       - name: Configure website URL
@@ -55,67 +90,117 @@ jobs:
           WEBSITE_URL: ${{ inputs.url }}
         working-directory: app
         run: |
+          set -e
           python3 - <<'PY'
           import os
           import xml.etree.ElementTree as ET
+          from urllib.parse import urlparse
 
-          url = os.environ["WEBSITE_URL"].strip()
+          url = os.environ['WEBSITE_URL'].strip()
+          parsed = urlparse(url)
 
-          if not url:
-              raise SystemExit("Website URL kosong")
+          if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+              raise SystemExit('Website URL tidak valid.')
 
-          if not url.startswith(("http://", "https://")):
-              raise SystemExit("Website URL harus diawali http:// atau https://")
-
-          config_file = "config.xml"
-          tree = ET.parse(config_file)
+          tree = ET.parse('config.xml')
           root = tree.getroot()
 
-          content = root.find("content")
+          content = root.find('content')
           if content is None:
-              content = ET.SubElement(root, "content")
+              content = ET.SubElement(root, 'content')
 
-          content.set("src", url)
+          content.set('src', url)
 
-          tree.write(
-              config_file,
-              encoding="utf-8",
-              xml_declaration=True
-          )
+          # Pastikan akses network tersedia untuk website eksternal.
+          has_access = False
+          for access in root.findall('access'):
+              if access.get('origin') == '*':
+                  has_access = True
+                  break
+          if not has_access:
+              ET.SubElement(root, 'access', {'origin': '*'})
 
-          print("Website URL berhasil dikonfigurasi:", url)
+          tree.write('config.xml', encoding='utf-8', xml_declaration=True)
+          print('Website URL berhasil dikonfigurasi:', url)
           PY
 
-      - name: Configure icon
-        if: ${{ inputs.icon_url != '' }}
+      - name: Prepare icon
         env:
           ICON_URL: ${{ inputs.icon_url }}
         working-directory: app
         run: |
-          mkdir -p resources/icon
-          curl -fL "$ICON_URL" -o resources/icon/icon.png
-          file resources/icon/icon.png
+          set -e
+          mkdir -p resources
 
-          if ! file resources/icon/icon.png | grep -qiE 'PNG|JPEG'; then
-            echo "Icon yang diberikan bukan file PNG/JPEG yang valid."
-            exit 1
+          if [ -n "${ICON_URL:-}" ]; then
+            echo "Mengunduh icon..."
+            if curl --fail --location --silent --show-error --retry 3 \
+              --connect-timeout 15 --max-time 60 \
+              "$ICON_URL" -o resources/icon.png; then
+              echo "Icon berhasil diunduh."
+            else
+              echo "Peringatan: icon gagal diunduh. Menggunakan icon bawaan."
+              rm -f resources/icon.png
+            fi
+          else
+            echo "icon_url kosong. Menggunakan icon bawaan."
           fi
 
-          echo "Icon berhasil diunduh."
+          # Jika icon tidak tersedia/invalid, buat PNG fallback agar proses
+          # resource Android tetap deterministik dan tidak gagal.
+          if [ ! -s resources/icon.png ] || ! file resources/icon.png | grep -qiE 'PNG|JPEG'; then
+            echo "Membuat icon fallback 1024x1024..."
+            rm -f resources/icon.png
+            python3 -m pip install --disable-pip-version-check --quiet Pillow
+            python3 - <<'PY'
+          from PIL import Image, ImageDraw
+
+          size = 1024
+          image = Image.new('RGBA', (size, size), (24, 24, 24, 255))
+          draw = ImageDraw.Draw(image)
+          margin = 96
+          draw.rounded_rectangle(
+              (margin, margin, size - margin, size - margin),
+              radius=160,
+              fill=(45, 45, 45, 255),
+          )
+          draw.textbbox((0, 0), 'G')
+          draw.text((430, 300), 'G', fill=(255, 255, 255, 255))
+          image.save('resources/icon.png', 'PNG')
+          PY
+          fi
+
+          file resources/icon.png
 
       - name: Add Android platform
         working-directory: app
         run: |
+          set -e
           cordova platform add android
+
+      - name: Generate Android launcher icons
+        working-directory: app
+        run: |
+          set -e
+          cordova-res android --copy
+          echo "Launcher icon berhasil diproses."
 
       - name: Build APK
         working-directory: app
         run: |
+          set -e
           cordova build android --release
 
-      - name: Find APK
+      - name: Verify APK
         run: |
-          find app/platforms/android -type f -name "*.apk" -print
+          set -e
+          APK_COUNT=$(find app/platforms/android -type f -name '*.apk' | wc -l)
+          if [ "$APK_COUNT" -lt 1 ]; then
+            echo 'APK tidak ditemukan setelah build.'
+            exit 1
+          fi
+          echo "APK ditemukan: $APK_COUNT file"
+          find app/platforms/android -type f -name '*.apk' -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
