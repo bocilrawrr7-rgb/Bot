@@ -1,4 +1,3 @@
-const GENETIK_BUILD_YML = `
 name: Build APK Genetik
 on:
   workflow_dispatch:
@@ -28,13 +27,25 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
       - name: Install dependencies
+        env:
+          APP_NAME: ${{ github.event.inputs.app_name }}
         run: |
+          set -e
           npm install -g cordova
-          cordova create app com.genetik.app $APP_NAME
+          cordova create app com.genetik.app "$APP_NAME"
           cd app
           cordova platform add android
+      - name: Configure website URL
+        env:
+          WEBSITE_URL: ${{ github.event.inputs.url }}
+        run: |
+          set -e
+          test -n "$WEBSITE_URL"
+          cd app
+          node -e 'const fs=require("fs"); const p="config.xml"; let s=fs.readFileSync(p,"utf8"); const u=process.env.WEBSITE_URL.replace(/&/g,"&amp;").replace(/"/g,"&quot;"); s=s.replace(/<content[^>]*src="[^"]*"[^>]*/>/, "<content src=""+u+"" />"); fs.writeFileSync(p,s);'
       - name: Build APK
         run: |
+          set -e
           cd app
           cordova build android --release
       - name: Upload APK
@@ -42,4 +53,3 @@ jobs:
         with:
           name: app-release
           path: app/platforms/android/app/build/outputs/apk/release/*.apk
-`;
