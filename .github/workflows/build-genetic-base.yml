@@ -1,55 +1,131 @@
+const GENETIK_BUILD_YML = `
 name: Build APK Genetik
+
 on:
   workflow_dispatch:
     inputs:
       url:
         description: 'URL website'
         required: true
+        type: string
       app_name:
         description: 'Nama aplikasi'
         required: true
+        type: string
       icon_url:
         description: 'URL icon'
         required: false
+        type: string
+
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
+
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-      - name: Install dependencies
+
+      - name: Install Cordova
+        run: npm install -g cordova
+
+      - name: Create Cordova project
         env:
-          APP_NAME: ${{ github.event.inputs.app_name }}
+          APP_NAME: \${{ inputs.app_name }}
         run: |
-          set -e
-          npm install -g cordova
-          cordova create app com.genetik.app "$APP_NAME"
-          cd app
-          cordova platform add android
+          cordova create app com.genetik.app "\$APP_NAME"
+
       - name: Configure website URL
         env:
-          WEBSITE_URL: ${{ github.event.inputs.url }}
+          WEBSITE_URL: \${{ inputs.url }}
+        working-directory: app
         run: |
-          set -e
-          test -n "$WEBSITE_URL"
-          cd app
-          node -e 'const fs=require("fs"); const p="config.xml"; let s=fs.readFileSync(p,"utf8"); const u=process.env.WEBSITE_URL.replace(/&/g,"&amp;").replace(/"/g,"&quot;"); s=s.replace(/<content[^>]*src="[^"]*"[^>]*/>/, "<content src=""+u+"" />"); fs.writeFileSync(p,s);'
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          url = os.environ["WEBSITE_URL"].strip()
+
+          if not url:
+              raise SystemExit("Website URL kosong")
+
+          if not url.startswith(("http://", "https://")):
+              raise SystemExit("Website URL harus diawali http:// atau https://")
+
+          config_file = "config.xml"
+
+          tree = ET.parse(config_file)
+          root = tree.getroot()
+
+          content = root.find("content")
+
+          if content is None:
+              content = ET.SubElement(root, "content")
+
+          content.set("src", url)
+
+          tree.write(
+              config_file,
+              encoding="utf-8",
+              xml_declaration=True
+          )
+
+          print("Website URL berhasil dikonfigurasi:", url)
+          PY
+
+      - name: Configure icon
+        if: \${{ inputs.icon_url != '' }}
+        env:
+          ICON_URL: \${{ inputs.icon_url }}
+        working-directory: app
+        run: |
+          mkdir -p resources/icon
+
+          curl -fL "\$ICON_URL" -o resources/icon/icon.png
+
+          file resources/icon/icon.png
+
+          if ! file resources/icon/icon.png | grep -qiE 'PNG|JPEG'; then
+            echo "Icon yang diberikan bukan file PNG/JPEG yang valid."
+            exit 1
+          fi
+
+          echo "Icon berhasil diunduh."
+
+      - name: Add Android platform
+        working-directory: app
+        run: |
+          cordova platform add android
+
       - name: Build APK
+        working-directory: app
         run: |
-          set -e
-          cd app
           cordova build android --release
+
+      - name: Find APK
+        run: |
+          find app/platforms/android -type f -name "*.apk" -print
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
           path: app/platforms/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+`;
